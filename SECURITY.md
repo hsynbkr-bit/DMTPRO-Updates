@@ -1,7 +1,7 @@
-# DMTPRO Güvenlik
+# DMTPRO Güncelleme Güvenliği
 
-Güncelleme sistemi yalnız güvenilir GitHub deposundan HTTPS ile sürüm metadatası okumalı; indirilen arşivin SHA-256'sını ve gömülü yayıncı açık anahtarına karşı RSA imzasını doğrulamalıdır.
+Güncelleyici GitHub Releases API'sini HTTPS üzerinden kullanır, yalnız `hsynbkr-bit/DMTPRO-Updates` adresini kabul eder, yayın ZIP'inin API SHA-256 digest değerini ve ZIP içindeki EXE SHA-256 değerini denetler. Yeni paket kullanıcı onayıyla kurulur. İlk açılış başarısızlığında yedek EXE geri yüklenir.
 
-Yayıncı özel anahtarı veya parolası sohbetlere, genel depolara, üçüncü kişilere ya da dağıtım ZIP'lerine yüklenmemelidir. Daha önce paylaşılan V1 PFX **üretim için güvenli kabul edilmez**. Yeni imzalama anahtarı yalnız yayıncıya ait yerel Windows bilgisayarında oluşturulmalı ve dağıtım istemcileri yeni sabitlenmiş açık sertifikayla yeniden kurulmalıdır.
+**Not:** Bu dağıtım kanalında bağımsız RSA imzası zorunlu değildir. Bu seçim, GitHub hesabının ve Release metadatasının korunmasına daha fazla bağımlılık yaratır. GitHub hesabında iki faktörlü doğrulama kullanın. Özel anahtar veya parolaları, müşteri projelerini ve DWG dosyalarını genel depoya koymayın.
 
-Güvenlik bildirimi: huseyinozdenbakir@gmail.com (açıklarda kullanıcıya ait DWG veya proje içeriği paylaşmayın).
+Güvenlik bildirimi: huseyinozdenbakir@gmail.com
