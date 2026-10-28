@@ -1,0 +1,21 @@
+# Publisher secrets - NEVER COMMIT
+*.pfx
+*.p12
+*.p8
+*.key
+*.pem
+*YAYINCI*PAROLA*
+*PRIVATE*
+DMTPRO_PRIVATE/
+# Customer files and generated binaries
+*.dmtpro
+*.dwg
+*.dxf
+*.exe
+*.zip
+*.sig
+artifacts/
+bin/
+obj/
+output/
+*.log
