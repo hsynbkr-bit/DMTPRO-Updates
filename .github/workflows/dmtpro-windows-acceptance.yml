@@ -46,20 +46,20 @@ jobs:
           $qa=Join-Path $env:RUNNER_TEMP "dmtpro-qa"
           New-Item -ItemType Directory -Force -Path $qa | Out-Null
           $fixture=Join-Path $qa "fixture.json"
-          & $exe --logic-fixture $fixture
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $fixture)) { throw "Parsing fixture failed" }
+          $fixtureProc=Start-Process -FilePath $exe -ArgumentList @("--logic-fixture",$fixture) -Wait -PassThru
+          if ($fixtureProc.ExitCode -ne 0 -or -not (Test-Path $fixture)) { throw "Parsing fixture failed" }
           $parsed=Get-Content -Raw $fixture | ConvertFrom-Json
           if (-not $parsed.valid) { throw "Parsing fixture did not validate" }
           $smoke=Join-Path $qa "gui"
-          & $exe --smoke-test $smoke
-          if ($LASTEXITCODE -ne 0) { throw "WinForms smoke exit status invalid" }
+          $guiProc=Start-Process -FilePath $exe -ArgumentList @("--smoke-test",$smoke) -Wait -PassThru
+          if ($guiProc.ExitCode -ne 0) { throw "WinForms smoke exit status invalid" }
           $gui=Join-Path $smoke "desktop-smoke.json"
           if (-not (Test-Path $gui)) { throw "WinForms smoke report missing" }
           $desktop=Get-Content -Raw $gui | ConvertFrom-Json
           if (-not $desktop.windowCreated) { throw "Window did not open" }
           if (-not (Test-Path (Join-Path $smoke "desktop-smoke.png"))) { throw "GUI screenshot missing" }
-          & $exe --cad-diagnostics (Join-Path $qa "cad.json")
-          if ($LASTEXITCODE -ne 0) { throw "AutoCAD graceful-fallback diagnostic failed" }
+          $cadProc=Start-Process -FilePath $exe -ArgumentList @("--cad-diagnostics",(Join-Path $qa "cad.json")) -Wait -PassThru
+          if ($cadProc.ExitCode -ne 0) { throw "AutoCAD graceful-fallback diagnostic failed" }
           if (-not (Test-Path (Join-Path $qa "cad.json"))) { throw "CAD diagnostic output missing" }
       - name: Confirm uninstaller and preserve user-data area
         shell: pwsh
