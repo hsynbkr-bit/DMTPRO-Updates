@@ -1,0 +1,84 @@
+name: DMTPRO 2.0 Windows x64 acceptance
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/dmtpro-windows-acceptance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-smoke:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - name: Download and verify Windows setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://sb-5k218cpogub1.vercel.run/DMTPRO_Setup_2.0.0_win_x64.exe"
+          $setup = Join-Path $env:RUNNER_TEMP "DMTPRO_Setup_2.0.0_win_x64.exe"
+          Invoke-WebRequest -Uri $url -OutFile $setup -TimeoutSec 240
+          if ((Get-Item $setup).Length -ne 47087695) { throw "Setup length mismatch" }
+          $digest = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "97293917d797ba35f5e766860394db6b787859afdd3649af742f2c15ea1745d2") { throw "Setup SHA-256 mismatch" }
+          Write-Output "Verified installer SHA-256: $digest"
+      - name: Silent install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Join-Path $env:RUNNER_TEMP "DMTPRO_Setup_2.0.0_win_x64.exe"
+          $proc = Start-Process -FilePath $setup -ArgumentList "/S" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Installer failed ($($proc.ExitCode))" }
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\DMTPRO_2_Licensed\DMTPRO.exe"
+          if (-not (Test-Path $exe)) { throw "Installed DMTPRO.exe is missing" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne "31800665555d8d663e06d7a4eeded98bde6926762e03bb67b0df28871fddf510") { throw "Installed EXE hash mismatch" }
+          $config=Join-Path $env:LOCALAPPDATA "Programs\DMTPRO_2_Licensed\support-config.json"
+          if (-not (Test-Path $config)) { throw "Support config missing" }
+      - name: Functional WinForms and parsing smoke tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          $exe=Join-Path $env:LOCALAPPDATA "Programs\DMTPRO_2_Licensed\DMTPRO.exe"
+          $qa=Join-Path $env:RUNNER_TEMP "dmtpro-qa"
+          New-Item -ItemType Directory -Force -Path $qa | Out-Null
+          $fixture=Join-Path $qa "fixture.json"
+          & $exe --logic-fixture $fixture
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $fixture)) { throw "Parsing fixture failed" }
+          $parsed=Get-Content -Raw $fixture | ConvertFrom-Json
+          if (-not $parsed.valid) { throw "Parsing fixture did not validate" }
+          $smoke=Join-Path $qa "gui"
+          & $exe --smoke-test $smoke
+          if ($LASTEXITCODE -ne 0) { throw "WinForms smoke exit status invalid" }
+          $gui=Join-Path $smoke "desktop-smoke.json"
+          if (-not (Test-Path $gui)) { throw "WinForms smoke report missing" }
+          $desktop=Get-Content -Raw $gui | ConvertFrom-Json
+          if (-not $desktop.windowCreated) { throw "Window did not open" }
+          if (-not (Test-Path (Join-Path $smoke "desktop-smoke.png"))) { throw "GUI screenshot missing" }
+          & $exe --cad-diagnostics (Join-Path $qa "cad.json")
+          if ($LASTEXITCODE -ne 0) { throw "AutoCAD graceful-fallback diagnostic failed" }
+          if (-not (Test-Path (Join-Path $qa "cad.json"))) { throw "CAD diagnostic output missing" }
+      - name: Confirm uninstaller and preserve user-data area
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          $install=Join-Path $env:LOCALAPPDATA "Programs\DMTPRO_2_Licensed"
+          $uninstaller=Join-Path $install "Uninstall.exe"
+          if (-not (Test-Path $uninstaller)) { throw "Uninstaller missing" }
+          $p=Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Uninstall failed ($($p.ExitCode))" }
+          Start-Sleep -Seconds 3
+          if (Test-Path (Join-Path $install "DMTPRO.exe")) { throw "Uninstall left executable behind" }
+      - name: Upload tested setup and reports (not a public release)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DMTPRO-2.0-Windows-acceptance
+          path: |
+            ${{ runner.temp }}/DMTPRO_Setup_2.0.0_win_x64.exe
+            ${{ runner.temp }}/dmtpro-qa/**
+          if-no-files-found: warn
+          retention-days: 7
