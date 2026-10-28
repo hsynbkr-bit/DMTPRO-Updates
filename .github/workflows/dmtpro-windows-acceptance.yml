@@ -72,6 +72,10 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Uninstall failed ($($p.ExitCode))" }
           Start-Sleep -Seconds 3
           if (Test-Path (Join-Path $install "DMTPRO.exe")) { throw "Uninstall left executable behind" }
+      - name: Checkout repository for gh release command
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Publish free preview (beta; stable updater channel remains unchanged)
         shell: pwsh
         env:
