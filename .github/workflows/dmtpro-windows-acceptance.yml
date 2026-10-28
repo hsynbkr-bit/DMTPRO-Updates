@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows-smoke:
@@ -72,6 +72,31 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Uninstall failed ($($p.ExitCode))" }
           Start-Sleep -Seconds 3
           if (Test-Path (Join-Path $install "DMTPRO.exe")) { throw "Uninstall left executable behind" }
+      - name: Publish free preview (beta; stable updater channel remains unchanged)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference="Stop"
+          $setup=Join-Path $env:RUNNER_TEMP "DMTPRO_Setup_2.0.0_win_x64.exe"
+          $notes=Join-Path $env:RUNNER_TEMP "release-notes.md"
+          @"
+          ## DMTPRO 2.0.0 — Ücretsiz Önizleme
+          DMTPRO ücretsizdir. E-posta ile hesap oluşturma ve yönetici onayıyla kullanılabilir.
+          Bu kurulum Windows x64 için önceden derlenmiş gerçek Windows uygulamasını içerir; .NET SDK gerektirmez.
+
+          ### Doğrulama
+          - 236 adet .NET 8 regresyon testi: başarılı.
+          - Windows Server 2022: dosya hash, kurulum, POZ=105, WinForms açılış ve kaldırma testleri: başarılı.
+          - AutoCAD kurulu gerçek makinede DWG/TAG/metraj/işaretleme ve ticket eki gönderimi henüz **doğrulanmadı**. Bu nedenle sürüm önizleme/beta olarak yayımlandı, kararlı güncelleme sürümü değildir.
+
+          Setup SHA256: 97293917d797ba35f5e766860394db6b787859afdd3649af742f2c15ea1745d2
+          EXE SHA256: 31800665555d8d663e06d7a4eeded98bde6926762e03bb67b0df28871fddf510
+
+          Hesap: https://www.demirmetraj.com/dmtpro
+          Destek: https://www.demirmetraj.com/destek
+          "@ | Set-Content -Path $notes -Encoding utf8
+          gh release create "dmtpro-v2.0.0-beta.1" $setup --title "DMTPRO 2.0.0 - Ücretsiz Windows Önizleme" --notes-file $notes --prerelease --target "${{ github.sha }}"
       - name: Upload tested setup and reports (not a public release)
         if: always()
         uses: actions/upload-artifact@v4
