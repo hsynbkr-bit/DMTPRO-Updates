@@ -139,7 +139,7 @@ internal static class Program
     {
         var client = new HttpClient { Timeout = timeout };
         client.DefaultRequestHeaders.UserAgent.Add(
-            new ProductInfoHeaderValue("DMTPRO-Official-Updater", "2.0.1"));
+            new ProductInfoHeaderValue("DMTPRO-Official-Updater", "2.0.3"));
         client.DefaultRequestHeaders.Accept.Add(
             new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         return client;
@@ -228,6 +228,76 @@ internal static class Program
         }
     }
 
+    // Antivirus scanners and a second launcher can hold the executable briefly after exit.
+    // Retry bounded sharing violations; never kill other users' processes or bypass integrity checks.
+    private static void CopyWithRetries(string source, string dest, int maxMilliseconds = 30000)
+    {
+        var watch = Stopwatch.StartNew();
+        var attempt = 0;
+        while (true)
+        {
+            try
+            {
+                File.Copy(source, dest, true);
+                return;
+            }
+            catch (IOException) when (watch.ElapsedMilliseconds < maxMilliseconds)
+            {
+                attempt++;
+                Thread.Sleep(Math.Min(350 + attempt * 125, 1500));
+            }
+        }
+    }
+
+    private static void WaitForLauncherRelease(string installDir, int parentId)
+    {
+        try
+        {
+            using var parent = Process.GetProcessById(parentId);
+            if (!parent.WaitForExit(60000))
+                throw new IOException("Önceki güncelleme başlatıcısı kapanmadı. DMTPRO'yu kapatıp tekrar deneyin.");
+        }
+        catch (ArgumentException)
+        {
+            // The original launcher has already exited.
+        }
+
+        var expected = Path.GetFullPath(Path.Combine(installDir, LauncherName));
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (true)
+        {
+            var others = false;
+            foreach (var candidate in Process.GetProcessesByName("DMTPROLauncher"))
+            {
+                using (candidate)
+                {
+                    if (candidate.Id == Environment.ProcessId || candidate.HasExited) continue;
+                    try
+                    {
+                        if (string.Equals(Path.GetFullPath(candidate.MainModule?.FileName ?? ""), expected,
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            others = true;
+                            break;
+                        }
+                    }
+                    catch (System.ComponentModel.Win32Exception)
+                    {
+                        // Do not interfere with processes we are not allowed to inspect.
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Process exited during inspection.
+                    }
+                }
+            }
+            if (!others) return;
+            if (DateTime.UtcNow > deadline)
+                throw new IOException("DMTPROLauncher.exe başka bir işlemde açık. Görev Yöneticisi'nden diğer DMTPRO başlatıcılarını kapatın.");
+            Thread.Sleep(500);
+        }
+    }
+
     private static void ApplyFiles(string stage, string dir, bool simulateFailure = false)
     {
         var backup = Path.Combine(stage, "backup");
@@ -237,7 +307,7 @@ internal static class Program
         {
             var dest = Path.Combine(dir, file);
             if (!File.Exists(dest)) continue;
-            File.Copy(dest, Path.Combine(backup, file), true);
+            CopyWithRetries(dest, Path.Combine(backup, file));
             originals.Add(file);
         }
         try
@@ -245,7 +315,7 @@ internal static class Program
             for (int index = 0; index < UpdatedFiles.Length; index++)
             {
                 var file = UpdatedFiles[index];
-                File.Copy(Path.Combine(stage, "payload", file), Path.Combine(dir, file), true);
+                CopyWithRetries(Path.Combine(stage, "payload", file), Path.Combine(dir, file));
                 if (simulateFailure && index == 1)
                     throw new IOException("Simulated interruption");
             }
@@ -256,7 +326,7 @@ internal static class Program
             {
                 var dest = Path.Combine(dir, file);
                 if (originals.Contains(file))
-                    File.Copy(Path.Combine(backup, file), dest, true);
+                    CopyWithRetries(Path.Combine(backup, file), dest);
                 else if (File.Exists(dest))
                     File.Delete(dest);
             }
@@ -272,7 +342,7 @@ internal static class Program
             var src = Path.Combine(backup, name);
             var dest = Path.Combine(dir, name);
             if (File.Exists(src))
-                File.Copy(src, dest, true);
+                CopyWithRetries(src, dest);
             else if (File.Exists(dest))
                 File.Delete(dest);
         }
@@ -283,8 +353,7 @@ internal static class Program
         bool installedNewFiles = false;
         try
         {
-            try { Process.GetProcessById(parentId).WaitForExit(25000); }
-            catch (ArgumentException) { }
+            WaitForLauncherRelease(installDir, parentId);
             if (Process.GetProcessesByName("DMTPRO").Any(p =>
                     !p.HasExited && string.Equals(p.MainModule?.FileName,
                     Path.Combine(installDir, ProgramName), StringComparison.OrdinalIgnoreCase)))
@@ -322,7 +391,7 @@ internal static class Program
                 try { RestoreFiles(stage, installDir); } catch (Exception ex) { Log("Rollback error: " + ex); }
             }
             try { LaunchFromWorker(installDir); } catch (Exception ex) { Log("Old app launch error: " + ex); }
-            MessageBox.Show("Güncelleme uygulanamadı; önceki sürüme dönüldü.\n" +
+            MessageBox.Show("Güncelleme uygulanamadı. Eski kurulum yeniden başlatılıyor.\n" +
                 error.Message, "DMTPRO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return 1;
         }
@@ -330,7 +399,8 @@ internal static class Program
 
     private static void LaunchFromWorker(string dir)
     {
-        Process.Start(new ProcessStartInfo(Path.Combine(dir, LauncherName))
+        // A failed update must not immediately re-open the updater and start another update loop.
+        Process.Start(new ProcessStartInfo(Path.Combine(dir, ProgramName))
         {
             WorkingDirectory = dir, UseShellExecute = true
         });
@@ -378,9 +448,14 @@ internal static class Program
             if (!rollbackTriggered || UpdatedFiles.Any(n =>
                     File.ReadAllText(Path.Combine(install, n)) != "old " + n))
                 throw new Exception("Rollback test failed");
+            // Reproduce an in-use launcher and prove that the updater waits for the lock.
+            var lockPath = Path.Combine(install, LauncherName);
+            using var exclusiveLock = new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            var unlock = Task.Run(() => { Thread.Sleep(1500); exclusiveLock.Dispose(); });
             ApplyFiles(stage, install);
+            unlock.GetAwaiter().GetResult();
             if (UpdatedFiles.Any(n => Sha256(Path.Combine(install, n)) != hashes[n]))
-                throw new Exception("Apply test failed");
+                throw new Exception("Apply with transient locked launcher failed");
             var releases = "[" +
                 "{\"draft\":false,\"prerelease\":false,\"tag_name\":\"v1.0.6\",\"assets\":[]}," +
                 "{\"draft\":false,\"prerelease\":true,\"tag_name\":\"dmtpro-v2.0.9-beta.1\",\"assets\":[]}," +
@@ -389,7 +464,7 @@ internal static class Program
                 "\",\"browser_download_url\":\"https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.2/" + AssetName + "\"}]}]";
             if (SelectRelease(releases, new Version(2, 0, 1))?.Version != new Version(2, 0, 2))
                 throw new Exception("Release selection failed");
-            var report = "{\"checksum_rejection\":true,\"rollback\":true,\"apply\":true,\"stable_2x_filter\":true}";
+            var report = "{\"checksum_rejection\":true,\"rollback\":true,\"apply\":true,\"stable_2x_filter\":true,\"locked_launcher_retry\":true}";
             if (resultFile != null) File.WriteAllText(resultFile, report);
             return 0;
         }
