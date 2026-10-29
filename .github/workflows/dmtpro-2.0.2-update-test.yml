@@ -83,7 +83,9 @@ jobs:
           foreach ($name in @('DMTPRO.exe','DMTPROLauncher.exe','DMTPRO_Icon.ico','version.txt')) {
             if ((Get-FileHash (Join-Path $payload $name) -Algorithm SHA256).Hash.ToLower() -ne $manifest.files.$name) { throw "Payload hash mismatch: $name" }
           }
-          $apply=Start-Process -FilePath (Join-Path $testdir 'DMTPROUpdateWorker.exe') -ArgumentList @('--apply',$testdir,$dir,'9999999') -PassThru -Wait
+          $apply=Start-Process -FilePath (Join-Path $testdir 'DMTPROUpdateWorker.exe') -ArgumentList @('--apply',$testdir,$dir,'9999999') -PassThru
+          # WaitForExit waits only for the worker, not its deliberately launched DMTPRO desktop child.
+          if (!$apply.WaitForExit(45000)) { Stop-Process -Id $apply.Id -Force -ErrorAction SilentlyContinue; throw 'Updater worker timed out' }
           if ($apply.ExitCode -ne 0) { throw "2.0.1 worker could not apply 2.0.2 ($($apply.ExitCode))" }
           if (!(Test-Path (Join-Path $testdir 'started.ok'))) { throw 'New program launch was not confirmed' }
           if ((Get-Content -Raw (Join-Path $dir 'version.txt')).Trim() -ne '2.0.2') { throw '2.0.2 version.txt not installed' }
