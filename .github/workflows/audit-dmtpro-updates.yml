@@ -1,0 +1,102 @@
+name: DMTPRO isolated updater behavior audit
+
+on:
+  push:
+    branches: [audit/dmtpro-update-behavior-20261029]
+    paths:
+      - .github/workflows/audit-dmtpro-updates.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-published-channel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Compare stable and beta releases without publishing
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request,os
+          root="https://api.github.com/repos/hsynbkr-bit/DMTPRO-Updates"
+          def get(path):
+              req=urllib.request.Request(root+path,headers={"User-Agent":"dmtpro-readonly-update-audit"})
+              return json.load(urllib.request.urlopen(req,timeout=25))
+          stable=get("/releases/latest")
+          releases=get("/releases?per_page=10")
+          beta=[r for r in releases if r.get("prerelease") and r["tag_name"].startswith("dmtpro-v2.")]
+          result={"latest_stable":stable["tag_name"],"latest_stable_assets":[a["name"] for a in stable["assets"]],
+                  "newest_beta":beta[0]["tag_name"] if beta else None,
+                  "newest_beta_assets":[a["name"] for a in beta[0]["assets"]] if beta else [],
+                  "beta_excluded_from_latest_stable":stable["tag_name"]!= (beta[0]["tag_name"] if beta else None)}
+          print(json.dumps(result,indent=2))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as f:
+              f.write("## Live GitHub channel\n\n```json\n"+json.dumps(result,indent=2)+"\n```\n")
+          PY
+      - name: Download exact published beta.2 and inspect bundled assemblies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y p7zip-full
+          mkdir -p work/original
+          curl -fL --retry 3 -o work/setup.exe 'https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.0-beta.2/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe'
+          echo 'dfe73e36bc7ac1c8e17d713ee6477a4d2a5cd9e7ccff8dec63cbe5fd0373ac88  work/setup.exe' | sha256sum -c -
+          7z x -y -owork/original work/setup.exe > /dev/null
+          test -s work/original/DMTPRO.exe
+          python3 audit/dmtpro_bundle_inspect.py work/original/DMTPRO.exe
+  windows-install-transition:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Compare beta.1 and beta.2 behavior in disposable Windows user profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir=Join-Path $env:RUNNER_TEMP 'dmtpro-updater-audit'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $setup1=Join-Path $dir 'beta1.exe'
+          $setup2=Join-Path $dir 'beta2.exe'
+          Invoke-WebRequest 'https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.0-beta.1/DMTPRO_Setup_2.0.0_win_x64.exe' -OutFile $setup1 -TimeoutSec 180
+          Invoke-WebRequest 'https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.0-beta.2/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe' -OutFile $setup2 -TimeoutSec 180
+          if ((Get-FileHash $setup1 -Algorithm SHA256).Hash.ToLower() -ne '97293917d797ba35f5e766860394db6b787859afdd3649af742f2c15ea1745d2') { throw 'beta1 hash mismatch' }
+          if ((Get-FileHash $setup2 -Algorithm SHA256).Hash.ToLower() -ne 'dfe73e36bc7ac1c8e17d713ee6477a4d2a5cd9e7ccff8dec63cbe5fd0373ac88') { throw 'beta2 hash mismatch' }
+          $p=Start-Process $setup1 -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "beta1 install error $($p.ExitCode)" }
+          $old=Join-Path $env:LOCALAPPDATA 'Programs\DMTPRO_2_Licensed\DMTPRO.exe'
+          $new=Join-Path $env:LOCALAPPDATA 'Programs\DMTPRO\DMTPRO.exe'
+          if (!(Test-Path $old)) { throw 'beta1 missing from expected install directory' }
+          $oldHash=(Get-FileHash $old -Algorithm SHA256).Hash.ToLower()
+          $oldVer=[Diagnostics.FileVersionInfo]::GetVersionInfo($old).FileVersion
+          $app=Start-Process $old -PassThru
+          Start-Sleep -Seconds 20
+          $app.Refresh()
+          if (!$app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue }
+          $oldHashAfterStart=(Get-FileHash $old -Algorithm SHA256).Hash.ToLower()
+          $newAppearedAfterStart=Test-Path $new
+          $p=Start-Process $setup2 -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "beta2 install error $($p.ExitCode)" }
+          if (!(Test-Path $new)) { throw 'beta2 missing from expected install directory' }
+          $newVer=[Diagnostics.FileVersionInfo]::GetVersionInfo($new).FileVersion
+          $oldRemains=Test-Path $old
+          $newHash=(Get-FileHash $new -Algorithm SHA256).Hash.ToLower()
+          $report=[ordered]@{
+            beta1_folder='DMTPRO_2_Licensed'
+            beta2_folder='DMTPRO'
+            beta1_file_version=$oldVer
+            beta2_file_version=$newVer
+            beta1_unchanged_on_unlicensed_start=($oldHash -eq $oldHashAfterStart)
+            beta2_app_found_after_beta1_launch=$newAppearedAfterStart
+            beta1_app_remains_after_beta2_installer=$oldRemains
+            beta2_app_hash=$newHash
+            requires_signed_in_app_for_full_update_test=$true
+          }
+          $result=$report|ConvertTo-Json -Depth 5
+          Write-Host $result
+          $summary="## Windows two-installer transition (no production releases) `n`n```json`n$result`n````n"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary
