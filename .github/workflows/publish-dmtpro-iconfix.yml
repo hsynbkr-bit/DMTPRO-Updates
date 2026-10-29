@@ -43,7 +43,7 @@ jobs:
       - name: Embed icon while retaining .NET single-file payload
         run: .venv/bin/python scripts/build_iconfix.py
       - name: Build NSIS standalone installer
-        run: makensis -V3 scripts/installer_iconfix.nsi
+        run: makensis -V3 -NOCD scripts/installer_iconfix.nsi
       - name: Verify package archive and write checksums
         shell: bash
         run: |
