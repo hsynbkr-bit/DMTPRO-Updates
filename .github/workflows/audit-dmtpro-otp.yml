@@ -68,3 +68,19 @@ jobs:
               if i+1<len(lines):
                 print(str(i+2)+": "+redact(lines[i+1]))
           PY
+
+      - name: Inspect OTP request and verify code (redacted)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib,re
+          for file in pathlib.Path("work/source").rglob("SupportClient.cs"):
+              print("FILE",file)
+              lines=file.read_text(encoding="utf8").splitlines()
+              for start,end in [(60,114),(160,210)]:
+                  for n in range(start,min(end,len(lines))+1):
+                      line=lines[n-1]
+                      line=re.sub(r'"(?:https?://[^"]+|sb_publishable_[^"]+|eyJ[^"]+)"','"<redacted>"',line)
+                      if "ApiKey" in line or "apikey" in line.lower() or "secret" in line.lower():line="<hidden credential reference>"
+                      print(str(n)+": "+line[:260])
+          PY
