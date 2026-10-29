@@ -3,13 +3,13 @@ Unicode true
 !define APPKEY "Software\DemirMetraj\DMTPRO"
 !define UNINSTALLKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DMTPRO"
 Name "DMTPRO 2.0.1 - Otomatik Guncelleme"
-OutFile "${__FILEDIR__}\..\dist\DMTPRO_Setup_2.0.1_win_x64.exe"
+OutFile "@DIST@\DMTPRO_Setup_2.0.1_win_x64.exe"
 InstallDir "$LOCALAPPDATA\Programs\DMTPRO"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 ShowInstDetails show
-Icon "${__FILEDIR__}\..\dist\original/DMTPRO_Icon.ico"
-UninstallIcon "${__FILEDIR__}\..\dist\original/DMTPRO_Icon.ico"
+Icon "@DIST@\original\DMTPRO_Icon.ico"
+UninstallIcon "@DIST@\original\DMTPRO_Icon.ico"
 VIProductVersion "2.0.1.0"
 VIAddVersionKey "ProductName" "DMTPRO"
 VIAddVersionKey "FileDescription" "DMTPRO 2.0.1 Setup - Online Updater"
@@ -26,11 +26,11 @@ VIAddVersionKey "FileVersion" "2.0.1.0"
 Section "DMTPRO" SecMain
   SetShellVarContext current
   SetOutPath "$INSTDIR"
-  File "/oname=DMTPRO.exe" "${__FILEDIR__}\..\dist\original/DMTPRO.exe"
-  File "/oname=DMTPROLauncher.exe" "${__FILEDIR__}\..\dist\updater/DMTPROLauncher.exe"
-  File "${__FILEDIR__}\..\dist\original/support-config.json"
-  File "${__FILEDIR__}\..\dist\original/DMTPRO_Icon.ico"
-  File "${__FILEDIR__}\..\dist\version.txt"
+  File "/oname=DMTPRO.exe" "@DIST@\original\DMTPRO.exe"
+  File "/oname=DMTPROLauncher.exe" "@DIST@\updater\DMTPROLauncher.exe"
+  File "@DIST@\original\support-config.json"
+  File "@DIST@\original\DMTPRO_Icon.ico"
+  File "@DIST@\version.txt"
   WriteRegStr HKCU "${APPKEY}" "InstallPath" "$INSTDIR"
   CreateDirectory "$SMPROGRAMS\DMTPRO"
   CreateShortCut "$SMPROGRAMS\DMTPRO\DMTPRO.lnk" "$INSTDIR\DMTPROLauncher.exe" "" "$INSTDIR\DMTPRO_Icon.ico" 0
