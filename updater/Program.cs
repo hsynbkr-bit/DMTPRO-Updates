@@ -391,7 +391,7 @@ internal static class Program
                 try { RestoreFiles(stage, installDir); } catch (Exception ex) { Log("Rollback error: " + ex); }
             }
             try { LaunchFromWorker(installDir); } catch (Exception ex) { Log("Old app launch error: " + ex); }
-            MessageBox.Show("Güncelleme uygulanamadı; önceki sürüme dönüldü.\n" +
+            MessageBox.Show("Güncelleme uygulanamadı. Eski kurulum yeniden başlatılıyor.\n" +
                 error.Message, "DMTPRO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return 1;
         }
@@ -399,7 +399,8 @@ internal static class Program
 
     private static void LaunchFromWorker(string dir)
     {
-        Process.Start(new ProcessStartInfo(Path.Combine(dir, LauncherName))
+        // A failed update must not immediately re-open the updater and start another update loop.
+        Process.Start(new ProcessStartInfo(Path.Combine(dir, ProgramName))
         {
             WorkingDirectory = dir, UseShellExecute = true
         });
