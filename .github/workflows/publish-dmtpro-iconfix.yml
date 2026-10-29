@@ -1,0 +1,152 @@
+name: DMTPRO 2.0 beta icon-fix (Windows verified)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-dmtpro-iconfix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dmtpro-beta-iconfix-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout trusted source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install packagers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full nsis
+          python3 -m venv .venv
+          .venv/bin/pip install "lief==0.17.1" "pefile==2024.8.26" "Pillow==11.3.0"
+      - name: Fetch published 2.0.0 beta.1 with pinned SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/original
+          curl -fL --retry 3 --retry-delay 2 \
+            -o dist/original/setup.exe \
+            "https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.0-beta.1/DMTPRO_Setup_2.0.0_win_x64.exe"
+          echo "97293917d797ba35f5e766860394db6b787859afdd3649af742f2c15ea1745d2  dist/original/setup.exe" | sha256sum -c -
+          7z x -y -o"dist/original" dist/original/setup.exe > /dev/null
+          echo "31800665555d8d663e06d7a4eeded98bde6926762e03bb67b0df28871fddf510  dist/original/DMTPRO.exe" | sha256sum -c -
+          test -f dist/original/support-config.json
+      - name: Embed icon while retaining .NET single-file payload
+        run: .venv/bin/python scripts/build_iconfix.py
+      - name: Build NSIS standalone installer
+        run: makensis -V3 scripts/installer_iconfix.nsi
+      - name: Verify package archive and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe
+          7z t dist/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe
+          7z l dist/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe | tee dist/archive_listing.txt
+          grep -q "DMTPRO.exe" dist/archive_listing.txt
+          grep -q "DMTPRO_Icon.ico" dist/archive_listing.txt
+          sha256sum dist/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe > dist/SHA256SUMS.txt
+      - name: Share build with Windows smoke test
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmtpro-beta-iconfix
+          path: |
+            dist/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-smoke:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - name: Download exact built setup
+        uses: actions/download-artifact@v4
+        with:
+          name: dmtpro-beta-iconfix
+          path: download
+      - name: Verify Windows installer, icon, shortcut and program startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'download/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe').Path
+          $appDir = Join-Path $env:LOCALAPPDATA 'Programs/DMTPRO'
+          $install = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "NSIS install exit: $($install.ExitCode)" }
+          $app = Join-Path $appDir 'DMTPRO.exe'
+          $ico = Join-Path $appDir 'DMTPRO_Icon.ico'
+          if (!(Test-Path $app) -or !(Test-Path $ico)) { throw 'App or icon missing after install' }
+          $desktop = [Environment]::GetFolderPath('Desktop')
+          $shortcut = Join-Path $desktop 'DMTPRO.lnk'
+          if (!(Test-Path $shortcut)) { throw "Desktop shortcut missing: $shortcut" }
+          $wsh = New-Object -ComObject WScript.Shell
+          $lnk = $wsh.CreateShortcut($shortcut)
+          if ($lnk.TargetPath -ne $app) { throw "Wrong shortcut target: $($lnk.TargetPath)" }
+          if ($lnk.IconLocation -notlike '*DMTPRO_Icon.ico*') { throw "Wrong shortcut icon: $($lnk.IconLocation)" }
+          $p = Start-Process -FilePath $app -WorkingDirectory $appDir -PassThru
+          Start-Sleep -Seconds 10
+          $p.Refresh()
+          if ($p.HasExited -and $p.ExitCode -ne 0) {
+            throw "Application terminated during startup (exit $($p.ExitCode))"
+          }
+          if (!$p.HasExited) { Stop-Process -Id $p.Id -Force }
+          Write-Host 'PASS: NSIS install, icon file, desktop shortcut and executable startup.'
+          $uninstall = Join-Path $appDir 'Uninstall.exe'
+          if (!(Test-Path $uninstall)) { throw 'Uninstaller missing' }
+      - name: Report setup SHA-256
+        shell: pwsh
+        run: |
+          (Get-FileHash -Path 'download/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe' -Algorithm SHA256).Hash.ToLower()
+
+  publish-prerelease:
+    needs: [build, windows-smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested setup
+        uses: actions/download-artifact@v4
+        with:
+          name: dmtpro-beta-iconfix
+          path: download
+      - name: Publish beta.2 only if Windows smoke passed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="dmtpro-v2.0.0-beta.2"
+          exe="download/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe"
+          sha="$(sha256sum "$exe" | cut -d' ' -f1)"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Existing release $tag; refusing to replace it."
+            exit 0
+          fi
+          cat > release-notes.md <<EOF
+          DMTPRO 2.0.0 beta.2 — Windows ikon düzeltmesi.
+          
+          - Uygulama EXE'sine 16–256 px DMT logo simgesi eklendi.
+          - Kurulum ve masaüstü/Başlat menüsü kısayolları DMT logosunu kullanır.
+          - 2.0.0-beta.1 .NET single-file veri içeriği korunmuştur.
+          - Windows Server 2022 kurulumu, kısayol ve açılış kontrolü başarıyla tamamlanmıştır.
+          - AutoCAD üzerinde gerçek DWG metraj/işaretleme doğrulaması henüz yapılmamıştır.
+          - Bu yayın kararlı v1.0.6 güncelleme kanalını değiştirmez.
+          
+          Kurulum SHA-256: $sha
+          EOF
+          gh release create "$tag" "$exe" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target main \
+            --prerelease \
+            --title "DMTPRO 2.0.0 beta.2 — DMT ikonlu kurulum" \
+            --notes-file release-notes.md
+          echo "Published SHA-256: $sha"
