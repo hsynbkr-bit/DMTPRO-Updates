@@ -1,0 +1,77 @@
+name: DMTPRO isolated managed updater-code audit
+
+on:
+  push:
+    branches: [audit/dmtpro-update-behavior-20261029]
+    paths:
+      - .github/workflows/audit-dmtpro-updater-code.yml
+
+permissions:
+  contents: read
+
+jobs:
+  decompile-application-assemblies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify published 2.0 beta.2 and extract exact app assemblies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y p7zip-full
+          mkdir -p work/unpacked work/assemblies
+          curl -fL --retry 3 -o work/setup.exe 'https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.0-beta.2/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe'
+          echo 'dfe73e36bc7ac1c8e17d713ee6477a4d2a5cd9e7ccff8dec63cbe5fd0373ac88  work/setup.exe' | sha256sum -c -
+          7z x -y -owork/unpacked work/setup.exe > /dev/null
+          python3 - <<'PY'
+          import importlib.util,pathlib,zlib
+          s=importlib.util.spec_from_file_location("bundle","audit/dmtpro_bundle_inspect.py")
+          m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+          buf,major,entries=m.unpack("work/unpacked/DMTPRO.exe")
+          for e in entries:
+              name=e["name"].split("/")[-1].split("\\")[-1]
+              if name not in ["DMTPRO.dll","DmtPro.Cad.dll","DmtPro.Core.dll"]:continue
+              p=e["packed"];data=buf[e["offset"]:e["offset"]+(p or e["size"])]
+              if p:data=zlib.decompress(data,-15)
+              if len(data)!=e["size"]:raise RuntimeError("invalid extracted length")
+              pathlib.Path("work/assemblies",name).write_bytes(data)
+              print("Extracted",name,len(data))
+          PY
+      - name: Decompile application only (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet tool install --global ilspycmd
+          mkdir -p work/source
+          for f in DMTPRO.dll DmtPro.Cad.dll DmtPro.Core.dll; do
+            "$HOME/.dotnet/tools/ilspycmd" -p -o "work/source/${f%.dll}" "work/assemblies/$f" > /dev/null
+          done
+      - name: Report updater-specific code indicators (no source uploads)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib,re,json,os
+          files=list(pathlib.Path("work/source").rglob("*.cs"))
+          contents=[p.read_text(encoding="utf-8",errors="replace") for p in files]
+          text="\n".join(contents)
+          patterns={
+            "github_releases_api":r"api\.github\.com|/releases/latest|DMTPRO-Updates",
+            "explicit_updater_types":r"\b(?:AutoUpdater|UpdateManager|UpdateService|UpdateClient|UpdaterService|GithubReleaseUpdater)\b",
+            "update_check_methods":r"\b(?:CheckForUpdates?|CheckUpdate|DownloadUpdate|ApplyUpdate|InstallUpdate|UpdateAvailable|CheckLatestRelease)\b",
+            "expected_release_zip":r"DMTPRO_app_win_x64\.zip",
+            "expected_manifest":r"version\.json",
+            "download_release_calls":r"releases/download|browser_download_url",
+          }
+          matches={name:{"found":bool(re.search(pattern,text,re.I)),
+                         "matched_files":[str(p) for p,c in zip(files,contents) if re.search(pattern,c,re.I)][:12]}
+                   for name,pattern in patterns.items()}
+          out={"decompiled_cs_files":len(files),"assembly_sources":sorted(set(str(p).split("/")[2] for p in files)),
+               "updater_indicators":matches}
+          print(json.dumps(out,ensure_ascii=False,indent=2))
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf8") as f:
+            f.write("## DMTPRO 2.0 updater-code audit\n\n```json\n"+json.dumps(out,ensure_ascii=False,indent=2)+"\n```\n")
+          PY
