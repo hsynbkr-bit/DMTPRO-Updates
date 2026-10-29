@@ -14,6 +14,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 15
     steps:
+      - name: Checkout verified audit gate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Verify published DMTPRO 2.0.3 hashes and inspect signatures (read only)
         shell: pwsh
         run: |
@@ -54,3 +58,12 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $json
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
           Write-Host 'AUDIT_COMPLETED: no executable launched; signature statuses shown above'
+          # The future release gate must reject these known unsigned artifacts.
+          $blocked = $false
+          try {
+            & ./scripts/assert-authenticode.ps1 -ExpectedPublisherSubject 'CN=Real Registered Publisher, O=Real Registered Publisher, C=TR' -Paths @($setup,(Join-Path $extracted 'DMTPROLauncher.exe'),(Join-Path $extracted 'DMTPRO.exe'))
+          } catch {
+            $blocked = $true
+          }
+          if (!$blocked) { throw 'Signature gate incorrectly approved the unsigned DMTPRO artifacts' }
+          Write-Host 'SIGNED_RELEASE_GATE_REJECTS_UNSIGNED_203_PASS'
