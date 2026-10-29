@@ -1,0 +1,94 @@
+name: DMTPRO 2.0.1 -> 2.0.2 real online updater smoke
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/dmtpro-2.0.2-live-online-test.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-online-update:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Confirm stable 2.0.2 published with real ZIP digest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $headers=@{'User-Agent'='DMTPRO-OTA-acceptance';'Accept'='application/vnd.github+json'}
+          $r=Invoke-RestMethod 'https://api.github.com/repos/hsynbkr-bit/DMTPRO-Updates/releases/tags/dmtpro-v2.0.2' -Headers $headers -TimeoutSec 45
+          if ($r.prerelease -or $r.draft -or $r.tag_name -ne 'dmtpro-v2.0.2') { throw '2.0.2 not published stable' }
+          $asset=$r.assets|Where-Object name -eq 'DMTPRO_update_win_x64.zip'
+          if (!$asset -or $asset.digest -notmatch '^sha256:[0-9a-f]{64}$') { throw '2.0.2 update ZIP/digest missing' }
+          Write-Host "Remote 2.0.2 stable asset present: $($asset.size) bytes"
+
+      - name: Install pinned 2.0.1 into disposable Windows profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $setup=Join-Path $env:RUNNER_TEMP 'DMTPRO_Setup_2.0.1.exe'
+          Invoke-WebRequest 'https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.1-beta.1/DMTPRO_Setup_2.0.1_win_x64.exe' -OutFile $setup -TimeoutSec 180
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash.ToLower() -ne '68db0c43625a0ac4c74727674f7b6c01a9c5262a2324c05d831fbd65d06e4054') { throw 'Base setup digest mismatch' }
+          $p=Start-Process $setup -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Installer failed' }
+          $dir=Join-Path $env:LOCALAPPDATA 'Programs\DMTPRO'
+          if ((Get-Content -Raw (Join-Path $dir 'version.txt')).Trim() -ne '2.0.1') { throw 'Not starting from 2.0.1' }
+          $shortcut=Join-Path ([Environment]::GetFolderPath('Desktop')) 'DMTPRO.lnk'
+          $sh=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+          if ($sh.TargetPath -ne (Join-Path $dir 'DMTPROLauncher.exe')) { throw 'Shortcut bypasses updater' }
+          Write-Host 'Pinned 2.0.1 and launcher verified'
+
+      - name: Open real updater, accept online prompt and verify 2.0.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public class MsgBoxClick {
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+              public static extern IntPtr FindWindow(string className, string windowName);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+              public static extern IntPtr SendMessage(IntPtr hWnd, UInt32 msg, IntPtr wParam, IntPtr lParam);
+          }
+          '@
+          $dir=Join-Path $env:LOCALAPPDATA 'Programs\DMTPRO'
+          $launcher=Join-Path $dir 'DMTPROLauncher.exe'
+          $start=Start-Process -FilePath $launcher -PassThru
+          $confirmed=$false
+          for ($i=0; $i -lt 70; $i++) {
+            $popup=[MsgBoxClick]::FindWindow('#32770','DMTPRO — Yeni sürüm')
+            if ($popup -ne [IntPtr]::Zero) {
+              [void][MsgBoxClick]::SendMessage($popup,0x0111,[IntPtr]6,[IntPtr]::Zero)
+              $confirmed=$true
+              Write-Host 'ONLINE_UPDATE_PROMPT_FOUND_AND_ACCEPTED'
+              break
+            }
+            Start-Sleep -Milliseconds 500
+          }
+          if (!$confirmed) {
+            if (!$start.HasExited) { Stop-Process -Id $start.Id -Force -ErrorAction SilentlyContinue }
+            throw 'Real online updater did not show 2.0.2 prompt (headless Windows UI limitation or version discovery failure)'
+          }
+          $updated=$false
+          for ($i=0; $i -lt 240; $i++) {
+            try {
+              $installed=(Get-Content -Raw (Join-Path $dir 'version.txt') -ErrorAction Stop).Trim()
+              if ($installed -eq '2.0.2') { $updated=$true;break }
+            } catch {}
+            Start-Sleep -Seconds 1
+          }
+          if (!$updated) { throw 'Online upgrade did not install 2.0.2 in 240 seconds' }
+          $fileVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo($launcher).FileVersion
+          if ($fileVersion -ne '2.0.2.0') { throw "New launcher FileVersion invalid: $fileVersion" }
+          $engineHash=(Get-FileHash (Join-Path $dir 'DMTPRO.exe') -Algorithm SHA256).Hash.ToLower()
+          if ($engineHash -ne '3526b11318f93d7adf82ad9a255410fc07fcb11dcf6e343dc31f48f5cabbe9a1') { throw 'Licensed metraj engine unexpectedly modified' }
+          $log=Join-Path $env:LOCALAPPDATA 'DMTPRO\updater.log'
+          $success=$false
+          for ($i=0; $i -lt 25; $i++) {
+            if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'Updated successfully to 2.0.2' -Quiet)) {$success=$true;break}
+            Start-Sleep -Seconds 1
+          }
+          if (!$success) { throw 'Worker success marker not observed in updater log' }
+          Write-Host 'REAL_ONLINE_UPGRADE_2.0.1_TO_2.0.2_PASS'
+          Get-Process -Name DMTPRO -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
