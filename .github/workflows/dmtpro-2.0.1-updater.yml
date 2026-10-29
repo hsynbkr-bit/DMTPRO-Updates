@@ -68,7 +68,12 @@ jobs:
           $nsis='C:\Program Files (x86)\NSIS\makensis.exe'
           if (!(Test-Path $nsis)) { choco install nsis --no-progress --yes --limit-output }
           if (!(Test-Path $nsis)) { throw 'NSIS missing' }
-          & $nsis /V2 /NOCD scripts/installer_2.0.1.nsi
+          $dist=(Resolve-Path dist).Path
+          foreach ($required in @('original/DMTPRO.exe','updater/DMTPROLauncher.exe','original/DMTPRO_Icon.ico','version.txt')) {
+            if (!(Test-Path (Join-Path $dist $required))) { throw "Missing NSIS input: $required" }
+          }
+          (Get-Content -Raw scripts/installer_2.0.1.nsi).Replace('@DIST@', $dist) | Set-Content dist/generated-installer.nsi -Encoding utf8
+          & $nsis /V2 /NOCD dist/generated-installer.nsi
           if ($LASTEXITCODE -ne 0 -or !(Test-Path dist/DMTPRO_Setup_2.0.1_win_x64.exe)) { throw 'NSIS failed' }
 
       - name: Verify silent install, launcher shortcut and application startup
