@@ -50,7 +50,7 @@ jobs:
           $report | Format-Table -AutoSize | Out-String | Write-Host
           $json = $report | ConvertTo-Json -Depth 3
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## DMTPRO 2.0.3 Authenticode status"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "```json"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```json'
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $json
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "```"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
           Write-Host 'AUDIT_COMPLETED: no executable launched; signature statuses shown above'
