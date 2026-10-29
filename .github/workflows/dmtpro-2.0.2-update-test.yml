@@ -1,9 +1,6 @@
 name: DMTPRO 2.0.2 stable update smoke - Windows QA and release
 on:
   workflow_dispatch:
-  push:
-    branches: [release/dmtpro-2.0.2-update-test, main]
-    paths: ["updater/**", "scripts/installer_2.0.2.nsi", ".github/workflows/dmtpro-2.0.2-update-test.yml"]
 permissions:
   contents: read
 jobs:
