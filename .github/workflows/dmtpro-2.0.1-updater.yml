@@ -1,8 +1,5 @@
 name: DMTPRO 2.0.1 automatic updater - Windows QA and release
 on:
-  push:
-    branches: [feature/dmtpro-2.0.1-auto-updater, main]
-    paths: ["updater/**", "scripts/installer_2.0.1.nsi", ".github/workflows/dmtpro-2.0.1-updater.yml"]
   workflow_dispatch:
 permissions:
   contents: read
