@@ -280,6 +280,7 @@ internal static class Program
 
     private static int ApplyWorker(string stage, string installDir, int parentId)
     {
+        bool installedNewFiles = false;
         try
         {
             try { Process.GetProcessById(parentId).WaitForExit(25000); }
@@ -290,6 +291,7 @@ internal static class Program
                 throw new IOException("DMTPRO çalışırken uygulama dosyası değiştirilemez.");
 
             ApplyFiles(stage, installDir);
+            installedNewFiles = true;
             var start = new ProcessStartInfo(Path.Combine(installDir, LauncherName))
             {
                 UseShellExecute = false,
@@ -315,7 +317,10 @@ internal static class Program
         catch (Exception error)
         {
             Log("Rollback: " + error);
-            try { RestoreFiles(stage, installDir); } catch (Exception ex) { Log("Rollback error: " + ex); }
+            if (installedNewFiles)
+            {
+                try { RestoreFiles(stage, installDir); } catch (Exception ex) { Log("Rollback error: " + ex); }
+            }
             try { LaunchFromWorker(installDir); } catch (Exception ex) { Log("Old app launch error: " + ex); }
             MessageBox.Show("Güncelleme uygulanamadı; önceki sürüme dönüldü.\n" +
                 error.Message, "DMTPRO", MessageBoxButtons.OK, MessageBoxIcon.Warning);
