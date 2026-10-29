@@ -1,0 +1,147 @@
+name: DMTPRO 2.0.1 automatic updater - Windows QA and release
+on:
+  push:
+    branches: [feature/dmtpro-2.0.1-auto-updater, main]
+    paths: ["updater/**", "scripts/installer_2.0.1.nsi", ".github/workflows/dmtpro-2.0.1-updater.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Restore pinned licensed DMTPRO 2.0 beta.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          New-Item -ItemType Directory -Force dist/original | Out-Null
+          $setup=Join-Path $PWD 'dist/original/previous.exe'
+          Invoke-WebRequest 'https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.0-beta.2/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe' -OutFile $setup -TimeoutSec 240
+          $hash=(Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne 'dfe73e36bc7ac1c8e17d713ee6477a4d2a5cd9e7ccff8dec63cbe5fd0373ac88') { throw 'Untrusted source setup' }
+          & 'C:\Program Files\7-Zip\7z.exe' x -y '-odist/original' $setup | Out-Null
+          foreach ($name in @('DMTPRO.exe','DMTPRO_Icon.ico','support-config.json')) {
+            if (!(Test-Path "dist/original/$name")) { throw "Base setup missing $name" }
+          }
+          $engine=(Get-FileHash 'dist/original/DMTPRO.exe' -Algorithm SHA256).Hash.ToLower()
+          if ($engine -ne '3526b11318f93d7adf82ad9a255410fc07fcb11dcf6e343dc31f48f5cabbe9a1') { throw 'Original engine mismatch' }
+
+      - name: Compile self-contained Windows launcher
+        shell: pwsh
+        run: |
+          dotnet publish updater/DMTPROLauncher.csproj -c Release -r win-x64 --self-contained true -o dist/updater
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path dist/updater/DMTPROLauncher.exe)) { throw 'Compilation failed' }
+
+      - name: Run update, digest, rollback and version unit tests
+        shell: pwsh
+        run: |
+          $report=Join-Path $env:RUNNER_TEMP 'updater-test.json'
+          $p=Start-Process (Resolve-Path dist/updater/DMTPROLauncher.exe) -ArgumentList @('--self-test',$report) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Updater selftest failed: $(Get-Content -Raw $report)" }
+          $test=Get-Content -Raw $report | ConvertFrom-Json
+          if (!$test.checksum_rejection -or !$test.rollback -or !$test.apply -or !$test.stable_2x_filter) { throw 'Selftest results invalid' }
+          Write-Host "UPDATER_TEST_PASS: $(Get-Content -Raw $report)"
+
+      - name: Create update ZIP with per-file SHA-256 manifest
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/package | Out-Null
+          '2.0.1' | Set-Content -Path dist/version.txt -Encoding ascii -NoNewline
+          foreach ($name in @('DMTPRO.exe','DMTPRO_Icon.ico')) { Copy-Item "dist/original/$name" "dist/package/$name" }
+          Copy-Item dist/updater/DMTPROLauncher.exe dist/package/DMTPROLauncher.exe
+          Copy-Item dist/version.txt dist/package/version.txt
+          $files=[ordered]@{}
+          foreach ($name in @('DMTPRO.exe','DMTPROLauncher.exe','DMTPRO_Icon.ico','version.txt')) {
+            $files[$name]=(Get-FileHash "dist/package/$name" -Algorithm SHA256).Hash.ToLower()
+          }
+          $manifest=[ordered]@{version='2.0.1';releaseTag='dmtpro-v2.0.1-beta.1';files=$files}
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content dist/package/version.json -Encoding utf8
+          Compress-Archive -Path dist/package/* -DestinationPath dist/DMTPRO_update_win_x64.zip -CompressionLevel Optimal
+
+      - name: Build single-file setup
+        shell: pwsh
+        run: |
+          $nsis='C:\Program Files (x86)\NSIS\makensis.exe'
+          if (!(Test-Path $nsis)) { choco install nsis --no-progress --yes --limit-output }
+          if (!(Test-Path $nsis)) { throw 'NSIS missing' }
+          & $nsis /V2 /NOCD scripts/installer_2.0.1.nsi
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path dist/DMTPRO_Setup_2.0.1_win_x64.exe)) { throw 'NSIS failed' }
+
+      - name: Verify silent install, launcher shortcut and application startup
+        shell: pwsh
+        run: |
+          $p=Start-Process (Resolve-Path dist/DMTPRO_Setup_2.0.1_win_x64.exe) -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw 'Setup installation failed' }
+          $dir=Join-Path $env:LOCALAPPDATA 'Programs\DMTPRO'
+          foreach ($name in @('DMTPRO.exe','DMTPROLauncher.exe','DMTPRO_Icon.ico','support-config.json','version.txt','Uninstall.exe')) {
+            if (!(Test-Path (Join-Path $dir $name))) { throw "Missing $name" }
+          }
+          if ((Get-Content -Raw (Join-Path $dir version.txt)).Trim() -ne '2.0.1') { throw 'Wrong installed version' }
+          if ((Get-FileHash (Join-Path $dir DMTPRO.exe) -Algorithm SHA256).Hash.ToLower() -ne '3526b11318f93d7adf82ad9a255410fc07fcb11dcf6e343dc31f48f5cabbe9a1') { throw 'App engine modified' }
+          $shortcut=Join-Path ([Environment]::GetFolderPath('Desktop')) 'DMTPRO.lnk'
+          $sc=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+          if ($sc.TargetPath -ne (Join-Path $dir DMTPROLauncher.exe)) { throw "Updater shortcut is wrong: $($sc.TargetPath)" }
+          $launch=Start-Process (Join-Path $dir DMTPROLauncher.exe) -PassThru
+          Start-Sleep -Seconds 18
+          $app=Get-Process -Name DMTPRO -ErrorAction SilentlyContinue
+          if (!$app) { throw 'App not running after launcher' }
+          $app | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (!$launch.HasExited) { Stop-Process -Id $launch.Id -Force -ErrorAction SilentlyContinue }
+          Write-Host 'WINDOWS_SETUP_AND_LAUNCH_PASS'
+          $removed=Start-Process (Join-Path $dir Uninstall.exe) -ArgumentList '/S' -Wait -PassThru
+          if ($removed.ExitCode -ne 0) { throw 'Uninstaller failed' }
+
+      - name: Retain Windows-tested release packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmtpro-2.0.1-updater-tested
+          path: |
+            dist/DMTPRO_Setup_2.0.1_win_x64.exe
+            dist/DMTPRO_update_win_x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: github.ref == 'refs/heads/main'
+    needs: [windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmtpro-2.0.1-updater-tested
+          path: download
+      - name: Publish tested beta release only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=dmtpro-v2.0.1-beta.1
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release tag already exists; refusing overwrite'
+            exit 1
+          fi
+          setup=download/DMTPRO_Setup_2.0.1_win_x64.exe
+          zip=download/DMTPRO_update_win_x64.zip
+          setup_hash=$(sha256sum "$setup" | cut -d' ' -f1)
+          zip_hash=$(sha256sum "$zip" | cut -d' ' -f1)
+          cat > notes.md <<EOF
+          DMTPRO 2.0.1 beta: Windows automatic update starter.
+          - Standalone Setup; installed desktop icon opens the updater first.
+          - Detects the latest tested 2.x non-prerelease via GitHub.
+          - Shows a confirmation, checks ZIP and file SHA-256, then updates and rolls back if launch fails.
+          - Licensed DMTPRO engine is unchanged from beta.2.
+          - Existing beta users must install this Setup once to activate future updates.
+          - Real AutoCAD/DWG end-to-end production verification remains open, so this is a beta.
+          Setup SHA-256: $setup_hash
+          Update ZIP SHA-256: $zip_hash
+          EOF
+          gh release create "$tag" "$setup" "$zip" \
+            --repo "$GITHUB_REPOSITORY" --target main --prerelease \
+            --title 'DMTPRO 2.0.1 beta - Otomatik guncelleme' --notes-file notes.md
