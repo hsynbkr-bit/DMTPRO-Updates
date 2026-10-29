@@ -84,3 +84,17 @@ jobs:
                       if "ApiKey" in line or "apikey" in line.lower() or "secret" in line.lower():line="<hidden credential reference>"
                       print(str(n)+": "+line[:260])
           PY
+
+      - name: Inspect login form send and verify event transitions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib,re
+          for file in pathlib.Path("work/source").rglob("LicenseLoginForm.cs"):
+              print("LOGIN_FORM",file)
+              lines=file.read_text(encoding="utf8").splitlines()
+              for n in range(150,min(248,len(lines))+1):
+                  line=lines[n-1]
+                  line=re.sub(r'"(?:https?://[^"]+|sb_publishable_[^"]+|eyJ[^"]+)"','"<redacted>"',line)
+                  print(str(n)+": "+line[:280])
+          PY
