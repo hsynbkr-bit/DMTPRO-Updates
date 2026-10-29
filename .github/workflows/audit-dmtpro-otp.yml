@@ -1,0 +1,70 @@
+name: DMTPRO 2.0 desktop OTP compatibility audit
+
+on:
+  push:
+    branches: [audit/dmtpro-update-behavior-20261029]
+    paths: [".github/workflows/audit-dmtpro-otp.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Download pinned production app
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y p7zip-full
+          mkdir -p work/unpacked work/assemblies
+          curl -fL --retry 3 -o work/setup.exe 'https://github.com/hsynbkr-bit/DMTPRO-Updates/releases/download/dmtpro-v2.0.0-beta.2/DMTPRO_Setup_2.0.0_IconFix_win_x64.exe'
+          echo 'dfe73e36bc7ac1c8e17d713ee6477a4d2a5cd9e7ccff8dec63cbe5fd0373ac88  work/setup.exe' | sha256sum -c -
+          7z x -y -owork/unpacked work/setup.exe >/dev/null
+          python3 - <<'PY'
+          import importlib.util,pathlib,zlib
+          spec=importlib.util.spec_from_file_location("bundle","audit/dmtpro_bundle_inspect.py")
+          module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+          buf,major,entries=module.unpack("work/unpacked/DMTPRO.exe")
+          for entry in entries:
+              name=entry["name"].replace("\\","/").split("/")[-1]
+              if name not in ("DMTPRO.dll","DmtPro.Cad.dll","DmtPro.Core.dll"):continue
+              packed=entry["packed"]
+              data=buf[entry["offset"]:entry["offset"]+(packed or entry["size"])]
+              if packed:data=zlib.decompress(data,-15)
+              pathlib.Path("work/assemblies",name).write_bytes(data)
+          PY
+      - name: Decompile bounded application only
+        shell: bash
+        run: |
+          dotnet tool install --global ilspycmd
+          mkdir -p work/source
+          for f in DMTPRO.dll DmtPro.Cad.dll DmtPro.Core.dll; do
+            "$HOME/.dotnet/tools/ilspycmd" -p -o "work/source/\${f%.dll}" "work/assemblies/$f" >/dev/null
+          done
+      - name: Report OTP protocol method structure, no tokens or credentials
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib,re
+          files=list(pathlib.Path("work/source").rglob("*.cs"))
+          keywords=re.compile(r"verifyOtp|verify_otp|/auth/v1/verify|request-otp|/api/destek|otp_expired|/token\?|grant_type|email_otp|token_hash|refresh_token|GetStringAsync|SendAsync|Authentication",re.I)
+          for f in files:
+            lines=f.read_text(encoding="utf-8",errors="replace").splitlines()
+            hit=[i for i,line in enumerate(lines) if keywords.search(line)]
+            if not hit: continue
+            print("FILE",str(f),"MATCHES",len(hit))
+            for i in hit[:65]:
+              def redact(s):
+                s=re.sub(r'"(?:https?://[^"]+|sb_publishable_[^"]+|eyJ[^"]+)"','"<redacted>"',s)
+                return s[:250].strip()
+              print(str(i+1)+": "+redact(lines[i]))
+              if i+1<len(lines):
+                print(str(i+2)+": "+redact(lines[i+1]))
+          PY
